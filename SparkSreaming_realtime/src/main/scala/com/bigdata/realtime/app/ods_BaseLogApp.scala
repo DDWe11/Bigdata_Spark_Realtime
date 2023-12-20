@@ -117,14 +117,14 @@ object ods_BaseLogApp {
                                         //封装成PageDisplayLog
                                         val pageDisplayLog =
                                             PageDisplayLog(mid, uid, ar, ch, isNew, md, os, vc, ba,pageID,lastPageID,
-                                                pageItem, pageItemType, duringTime, sourceType, displayItemType,
+                                                pageItem, pageItemType, duringTime, sourceType, displayType,
                                                 displayItem,displayItemType, order,posID,ts)
                                         MyKafkaUtils.send(DWD_PAGE_DISPLAY_TOPIC, JSON.toJSONString(pageDisplayLog, new SerializeConfig(true)))
                                     }
                                 }
                                 //提取事件数据
                                 val actionsJsonArr: JSONArray = jsonObj.getJSONArray("actions")
-                                if(displaysJsonArr != null && displaysJsonArr.size() > 0){
+                                if(actionsJsonArr != null && actionsJsonArr.size() > 0){
                                     for(i <- 0 until actionsJsonArr.size()){
                                         val actionObj: JSONObject = actionsJsonArr.getJSONObject(i)
                                         //提取事件字段
