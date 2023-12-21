@@ -101,15 +101,14 @@ object MyKafkaUtils {
       ConsumerStrategies.Subscribe[String, String](Array(topic), consumerConfigs))
     kafkaDStream
   }
-  /**
-   * 基于SparkStreaming消费 ,获取到KafkaDStream , 使用指定的offset
-   */
-  def getKafkaDStream(ssc : StreamingContext , topic: String  , groupId:String ,  offsets: Map[TopicPartition, Long]  ) ={
-    consumerConfigs.put(ConsumerConfig.GROUP_ID_CONFIG , groupId)
-
-    val kafkaDStream: InputDStream[ConsumerRecord[String, String]] = KafkaUtils.createDirectStream(ssc,
+  /*
+ * 基于SparkStreaming消费数据,获得到KafkaDStream,使用指定的offset
+ */
+  def getKafkaDStream(ssc : StreamingContext ,topic: String , groupID:String ,offsets: Map[TopicPartition, Long]) ={
+    consumerConfigs.put(ConsumerConfig.GROUP_ID_CONFIG, groupID)
+    val kafkaDStream:InputDStream[ConsumerRecord[String, String]] = KafkaUtils.createDirectStream(ssc,
       LocationStrategies.PreferConsistent,
-      ConsumerStrategies.Subscribe[String, String](Array(topic), consumerConfigs , offsets))
+      ConsumerStrategies.Subscribe[String, String](Array(topic), consumerConfigs, offsets))
     kafkaDStream
   }
 }
