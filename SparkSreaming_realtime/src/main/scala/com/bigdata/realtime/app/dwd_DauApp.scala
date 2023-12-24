@@ -1,8 +1,8 @@
 package com.bigdata.realtime.app
 
-import com.alibaba.fastjson.JSON
-import com.bigdata.realtime.bean.PageLog
-import com.bigdata.realtime.util.{MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
+import com.alibaba.fastjson.{JSON, JSONObject}
+import com.bigdata.realtime.bean.{DauInfo, PageLog}
+import com.bigdata.realtime.util.{MyBeanUtils, MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.TopicPartition
 import org.apache.spark.SparkConf
@@ -12,6 +12,7 @@ import org.apache.spark.streaming.{Seconds, StreamingContext}
 import redis.clients.jedis.Jedis
 
 import java.text.SimpleDateFormat
+import java.time.{LocalDate, Period}
 import java.{lang, util}
 import java.util.Date
 import scala.collection.mutable.ListBuffer
@@ -98,17 +99,6 @@ object dwd_DauApp {
           val date: Date = new Date(ts)
           val dateStr: String = sdf.format(date)
           val redisDauKey: String = s"DAU:$dateStr"
-          //          val mids: util.List[String] = jedis.lrange(redisDauKey, 0, -1)
-          //          if(!mids.contains(mid)){
-          //            jedis.lpush(redisDauKey, mid)
-          //            pageLogs.append(pageLog)
-          //          }
-          //
-          //          val setMids: util.Set[String] = jedis.smembers(redisDauKey)
-          //          if(!setMids.contains(mid)){
-          //            jedis.sadd(redisDauKey,mid)
-          //            pageLogs.append(pageLog)
-          //          }
           val isNew: lang.Long = jedis.sadd(redisDauKey, mid)
           if (isNew == 1L) {
             pageLogs.append(pageLog)
@@ -119,8 +109,78 @@ object dwd_DauApp {
         pageLogs.iterator
       }
     )
-    redisFilterDStream.print()
+//    redisFilterDStream.print()
 
+    // TODO 5.3 维度关联
+    val dauInfoDStream: DStream[DauInfo] = redisFilterDStream.mapPartitions(
+      pageLogIter => {
+
+        val dauInfos: ListBuffer[DauInfo] = ListBuffer[DauInfo]()
+        val sdf: SimpleDateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+        val jedis: Jedis = MyRedisUtils.getJedisFromPool()
+
+        for (pageLog <- pageLogIter) {
+          val dauInfo = new DauInfo()
+          //1 将pagelog中的以后字段拷贝到duainfo
+          MyBeanUtils.copyProperties(pageLog, dauInfo)
+
+          //2 补充维度
+          //2.1 用户信息维度
+          val uid: String = pageLog.user_id
+          val redisUidkey: String = s"DIM:USER_INFO:$uid"
+          val userInfoJson: String = jedis.get(redisUidkey)
+          val userInfoJsonObj: JSONObject = JSON.parseObject(userInfoJson)
+          //提取性别
+          val gender: String = userInfoJsonObj.getString("gender")
+          //提取生日
+          val birthday: String = userInfoJsonObj.getString("birthday") // 1976-03-22
+          //换算年龄
+          val birthdayLd: LocalDate = LocalDate.parse(birthday)
+          val nowLd: LocalDate = LocalDate.now()
+          val period: Period = Period.between(birthdayLd, nowLd)
+          val age: Int = period.getYears
+
+          //补充到对象中
+          dauInfo.user_gender = gender
+          dauInfo.user_age = age.toString
+
+          //地区维度
+          //2.2  地区信息维度
+          // redis中: DIM:BASE_PROVINCE:1
+          val provinceID: String = dauInfo.province_id
+          val redisProvinceKey: String = s"DIM:BASE_PROVINCE:$provinceID"
+          val provinceJson: String = jedis.get(redisProvinceKey)
+          val provinceJsonObj: JSONObject = JSON.parseObject(provinceJson)
+          val provinceName: String = provinceJsonObj.getString("name")
+          val provinceIsoCode: String = provinceJsonObj.getString("iso_code")
+          val province3166: String = provinceJsonObj.getString("iso_3166_2")
+          val provinceAreaCode: String = provinceJsonObj.getString("area_code")
+          //补充到对象中
+          dauInfo.province_name = provinceName
+          dauInfo.province_iso_code = provinceIsoCode
+          dauInfo.province_3166_2 = province3166
+          dauInfo.province_area_code = provinceAreaCode
+
+          //2.3  日期字段处理
+          val date: Date = new Date(pageLog.ts)
+          val dtHr: String = sdf.format(date)
+          val dtHrArr: Array[String] = dtHr.split(" ")
+          val dt: String = dtHrArr(0)
+          val hr: String = dtHrArr(1).split(":")(0)
+          //补充到对象中
+          dauInfo.dt = dt
+          dauInfo.hr = hr
+
+          dauInfos.append(dauInfo)
+
+        }
+        jedis.close()
+        dauInfos.iterator
+      }
+    )
+    dauInfoDStream.print(100)
+
+    //写入到OLAP
 
     ssc.start()
     ssc.awaitTermination()
