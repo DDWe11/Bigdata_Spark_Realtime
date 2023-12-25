@@ -3,7 +3,7 @@ package com.bigdata.realtime.app
 import com.alibaba.fastjson.serializer.SerializeConfig
 import com.alibaba.fastjson.{JSON, JSONObject}
 import com.bigdata.realtime.bean.{OrderDetail, OrderInfo, OrderWide}
-import com.bigdata.realtime.util.{MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
+import com.bigdata.realtime.util.{MyEsUtils, MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.TopicPartition
 import org.apache.spark.SparkConf
@@ -11,6 +11,7 @@ import org.apache.spark.streaming.dstream.{DStream, InputDStream}
 import org.apache.spark.streaming.kafka010.{HasOffsetRanges, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
 import redis.clients.jedis.Jedis
+
 import java.util
 import java.time.{LocalDate, Period}
 import scala.collection.mutable.ListBuffer
@@ -211,13 +212,6 @@ object dwd_OrderApp{
               //加入到结果集中
               orderWides.append(orderWide)
             } else {
-              //写缓存
-              // 类型:   set
-              // key :   ORDERJOIN:ORDER_DETAIL:ORDER_ID
-              // value :  json, json ....
-              // 写入API: sadd
-              // 读取API: smembers
-              // 是否过期: 24小时
               val redisOrderDetailKey: String = s"ORDERJOIN:ORDER_DETAIL:${orderDetail.order_id}"
               jedis.sadd(redisOrderDetailKey, JSON.toJSONString(orderDetail, new SerializeConfig(true)))
               jedis.expire(redisOrderDetailKey, 24 * 3600)
@@ -233,27 +227,27 @@ object dwd_OrderApp{
     //写入ES
     //1. 索引分割， 通过索引模板控制mapping setting aliases
     //2. 使用工具类将数据写入ES
-//    orderWideDStream.foreachRDD(
-//      rdd => {
-//        rdd.foreachPartition(
-//          orderWideIter => {
-//            val orderWides: List[(String, OrderWide)] =
-//              orderWideIter.map( orderWide => (orderWide.detail_id.toString , orderWide)).toList
-//            if(orderWides.size > 0 ){
-//              val head: (String, OrderWide) = orderWides.head
-//              val date: String = head._2.create_date
-//              //索引名
-//              val indexName : String = s"gmall_order_wide_1018_$date"
-//              //写入到ES
-//              MyEsUtils.bulkSave(indexName , orderWides)
-//            }
-//          }
-//        )
-//        //提交offsets
-//        MyOffsetsUtils.saveOffset(orderInfoTopicName , orderInfoGroup , orderInfoOffsetRanges)
-//        MyOffsetsUtils.saveOffset(orderDetailTopicName , orderDetailGroup ,orderDetailOffsetRanges)
-//      }
-//    )
+    orderWideDStream.foreachRDD(
+      rdd => {
+        rdd.foreachPartition(
+          orderWideIter => {
+            val orderWides: List[(String, OrderWide)] =
+              orderWideIter.map( orderWide => (orderWide.detail_id.toString , orderWide)).toList
+            if(orderWides.size > 0 ){
+              val head: (String, OrderWide) = orderWides.head
+              val date: String = head._2.create_date
+              //索引名
+              val indexName : String = s"gmall_order_wide_$date"
+              //写入到ES
+              MyEsUtils.bulkSave(indexName , orderWides)
+            }
+          }
+        )
+        //提交offsets
+        MyOffsetsUtils.saveOffset(orderInfoTopicName , orderInfoGroup , orderInfoOffsetRanges)
+        MyOffsetsUtils.saveOffset(orderDetailTopicName , orderDetailGroup ,orderDetailOffsetRanges)
+      }
+    )
 
     ssc.start()
     ssc.awaitTermination()

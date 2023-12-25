@@ -2,14 +2,14 @@ package com.bigdata.realtime.app
 
 import com.alibaba.fastjson.{JSON, JSONObject}
 import com.bigdata.realtime.bean.{DauInfo, PageLog}
-import com.bigdata.realtime.util.{MyBeanUtils, MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
+import com.bigdata.realtime.util.{MyBeanUtils, MyEsUtils, MyKafkaUtils, MyOffsetsUtils, MyRedisUtils}
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.TopicPartition
 import org.apache.spark.SparkConf
 import org.apache.spark.streaming.dstream.{DStream, InputDStream}
 import org.apache.spark.streaming.kafka010.{HasOffsetRanges, OffsetRange}
 import org.apache.spark.streaming.{Seconds, StreamingContext}
-import redis.clients.jedis.Jedis
+import redis.clients.jedis.{Jedis, Pipeline}
 
 import java.text.SimpleDateFormat
 import java.time.{LocalDate, Period}
@@ -178,11 +178,57 @@ object dwd_DauApp {
         dauInfos.iterator
       }
     )
-    dauInfoDStream.print(100)
+//    dauInfoDStream.print(100)
 
     //写入到OLAP
-
+    //按照天分割索引，通过索引模版控制mapping，settings，aliases等
+    //准备ES工具类
+    dauInfoDStream.foreachRDD(
+      rdd => {
+        rdd.foreachPartition(
+          dauInfoIter => {
+            val docs:List[(String ,DauInfo)] = dauInfoIter.map(dauInfo => (dauInfo.mid,dauInfo)).toList
+            if(docs.size >0){
+              val head: (String,DauInfo) = docs.head
+              val ts: Long = head._2.ts
+              val sdf: SimpleDateFormat = new SimpleDateFormat("yyyy-MM-dd")
+              val dateStr:String = sdf.format(new Date(ts))
+              val indexName :String = s"gmall_dau_info_$dateStr"
+              MyEsUtils.bulkSave(indexName, docs)
+            }
+          }
+        )
+        //提交偏移量
+        MyOffsetsUtils.saveOffset(topicName, groupId, offsetRanges)
+      }
+    )
     ssc.start()
     ssc.awaitTermination()
+  }
+  //状态还原
+  def revertState(): Unit ={
+    //从ES中查询到所有的mid
+    val date: LocalDate = LocalDate.now()
+    val indexName : String = s"gmall_dau_info_$date"
+    val fieldName : String = "mid"
+    val mids: List[ String ] = MyEsUtils.searchField(indexName , fieldName)
+    //删除redis中记录的状态（所有的mid）
+    val jedis: Jedis = MyRedisUtils.getJedisFromPool()
+    val redisDauKey : String = s"DAU:$date"
+    jedis.del(redisDauKey)
+    //将从ES中查询到的mid覆盖到Redis中
+    if(mids != null && mids.size > 0 ){
+      /*for (mid <- mids) {
+        jedis.sadd(redisDauKey , mid )
+      }*/
+      val pipeline: Pipeline = jedis.pipelined()
+      for (mid <- mids) {
+        pipeline.sadd(redisDauKey , mid )  //不会直接到redis执行
+      }
+
+      pipeline.sync()  // 到redis执行
+    }
+
+    jedis.close()
   }
 }
